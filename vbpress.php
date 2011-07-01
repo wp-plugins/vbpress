@@ -12,6 +12,8 @@
  */
 
 class Vbpress {
+
+	var $options = array();
 	
 	/**
 	 * Singleton
@@ -37,14 +39,14 @@ class Vbpress {
 	}
 
 	/**
-	 * Attached to activate_{ plugin_basename( __FILES__ ) } by register_activation_hook()
+	 * Activation callback
 	 */
 	function plugin_activation() {
 	
 	}
 
 	/**
-	 * Removes all options.
+	 * Deactivation callback
 	 */
 	function plugin_deactivation() {
 		
@@ -54,7 +56,94 @@ class Vbpress {
 	 * Create the vBPress admin menu option
 	 */
 	function admin_menu() {
-		$hook = add_menu_page( 'vBPress', 'vBPress', 'manage_options', 'vbpress_settings', array( $this, 'settings' ), '' );
+		$vbpress_settings = Vbpress_Settings::init();
+		$hook = add_menu_page( 'vBPress', 'vBPress', 'manage_options', 'vbpress_settings', array( &$vbpress_settings, 'settings' ), '' );
+	}
+}
+
+/**
+ * This is our "API" for vBulletin. All interaction with the vBulletin core
+ * should be handled through this class.
+ */
+class Vbpress_Vb {
+	
+	/**
+	 * Singleton
+	 */
+	function &init() {
+		static $instance = false;
+
+		if ( !$instance ) {
+			load_plugin_textdomain( 'vbpress', false, dirname( plugin_basename( __FILE__ ) ) . '/languages/' );
+			$instance = new Vbpress_Vb;
+		}
+
+		return $instance;
+	}
+
+	/**
+	 * Constructor. Initializes WordPress hooks
+	 */
+	function Vbpress_Vb() {
+	
+		$this->options = get_option( 'vbpress_options' );
+		if ( isset( $GLOBALS['vbulletin'] ) ) {
+			$this->vbulletin = $GLOBALS['vbulletin'];
+		}
+		
+	}
+	
+	/**
+	 * If available, returns an array of user info for the currently
+	 * logged-in user
+	 */
+	function get_current_user_info() {
+		if ( !empty($this->vbulletin->userinfo['userid']) ) {
+			return $this->vbulletin->userinfo;
+		} else {
+			return false;
+		}
+	}
+
+	/**
+	 * If available, returns an array of user info for the specified
+	 * user ID
+	 */
+	function get_user_info( $user_id ) {
+		return fetch_userinfo($user_id);
+	}
+	
+}
+
+/**
+ * Manages the vBPress settings
+ */
+class Vbpress_Settings {
+
+	/**
+	 * Singleton
+	 */
+	function &init() {
+		static $instance = false;
+
+		if ( !$instance ) {
+			$instance = new Vbpress_Settings;
+		}
+
+		return $instance;
+	}
+	
+	/**
+	 * Constructor. Registers setting groups and subsequent settings
+	 */
+	function Vbpress_Settings() {
+		
+		register_setting( 'vbpress_options', 'vbpress_options', array( $this, 'options_validate' ) );
+		
+		// General settings
+		add_settings_section( 'vbpress_options_general', __( 'General Settings', 'vbpress' ), array( $this, 'output_section_general' ), 'vbpress' );
+		add_settings_field( 'vbpress_enabled', __( 'Enable vBPress', 'vbpress' ), array( $this, 'output_option_vbpress_enabled' ), 'vbpress', 'vbpress_options_general' );
+		add_settings_field( 'vbulletin_path', __( 'vBulletin Path', 'vbpress' ), array( $this, 'output_option_vbulletin_path' ), 'vbpress', 'vbpress_options_general' );
 	}
 
 	/**
@@ -62,120 +151,88 @@ class Vbpress {
 	 */
 	function settings() {
 	
-		$options = new Vbpress_Options();
+		$is_logged_in = false;
+		$vb_user_info = array();
 	
-		if ( !empty($_POST) && !wp_verify_nonce($_POST['vbpress_update_settings'], 'vbpress_update_settings') ) {
-			echo 'Sorry, your nonce did not verify.';
-			exit;
-		} else if ( !empty($_POST) ) {
-		
-			foreach ( $_POST as $name => $value ) {
-				$options->set($name, $value);
-			}
-			
-			$options->save();
+		$options = get_option( 'vbpress_options' );
+		if ( !empty( $options['vbpress_enabled'] ) ) {
+			$vbpress_vb = Vbpress_Vb::init();
+			$current_user_info = $vbpress_vb->get_current_user_info();
 		}
-		
-		echo '<pre>'.print_r($options->get(), 1).'</pre>';
 		
 		// TODO: Could we create 'View' class that is used for loading action views?
-		require('core/views/settings.php');
+		require( dirname( __FILE__ ) . '/core/views/settings.php' );
+	}
+
+	/**
+	 * Output section HTML
+	 */
+	function output_section_general() {
+		require( dirname( __FILE__ ) . '/core/views/option_section_general.php' );
+	}
+
+	/**
+	 * Output option field HTML
+	 */
+	function output_option_vbpress_enabled() {
+		$options = get_option( 'vbpress_options' );
+		require( dirname( __FILE__ ) . '/core/views/option_field_vbpress_enabled.php' );
+	}
+
+	/**
+	 * Output option field HTML
+	 */
+	function output_option_vbulletin_path() {
+		$options = get_option( 'vbpress_options' );
+		require( dirname( __FILE__ ) . '/core/views/option_field_vbulletin_path.php' );
+	}
+
+	/**
+	 * Validate submitted options data
+	 */
+	function options_validate( $data ) {
+		return $data;
 	}
 }
-
-class Vbpress_Options {
-
-	var $optionName = 'vbpress';
-
-	var $validOptionNames = array(
-		'enabled',
-		'vbulletin_path'
-	);
-
-	var $options = array();
-	
-	/**
-	 * Constructor
-	 */
-	function Vbpress_Options() {
-		$this->load();
-	}
-	
-	/**
-	 * Populates $options from WordPress database
-	 */
-	function load() {
-		$options = get_option($this->optionName, array());
-		if (!empty($options)) {
-			$options = $this->decode($options);
-		}
-	}
-	
-	/**
-	 * Get a specified vBPress option
-	 */
-	function get($name = '') {
-		if ($name == '') {
-			return $this->options;
-		} if (isset($this->options[$name])) {
-			return $this->options[$name];
-		}
-		
-		return null;
-	}
-	
-	/**
-	 * Set a specified vBPress option
-	 */
-	function set($name, $value, $unset = false) {
-	
-		// Strip out the prefix that we use in the forms
-		$name = str_replace('vbpress_', '', $name);
-		
-		if ($unset && isset($this->options[$name])) {
-			unset($this->options[$name]);
-		} else if ( in_array($name, $this->validOptionNames) ) {
-			$this->options[$name] = $value;
-		}
-	}
-	
-	/**
-	 * Add or update the options in the WordPress database
-	 */
-	function save() {
-		if (!get_option($this->optionName)) {
-			add_option($this->optionName, $this->encode($this->options));
-		} else {
-			update_option($this->optionName, $this->encode($this->options));
-		}
-	}
-	
-	/*
-	 * Removes all vBPress option data from the WordPress database
-	 */
-	function purge() {
-		return (delete_option($this->optionName) ? true : false);
-	}
-	
-	/**
-	 * Encode vBPress option data
-	 */
-	function encode($data) {
-		// TODO: Can we make the assumption that json_encode is an available function?
-		return json_encode($data);
-	}
-	
-	/**
-	 * Decode vBPress option data
-	 */
-	function decode($data) {
-		return !empty($data) ? json_decode($data) : null;
-	}
-}
-
-class Vbpress_Error extends WP_Error {}
 
 register_activation_hook( __FILE__, array( 'Vbpress', 'plugin_activation' ) );
 register_deactivation_hook( __FILE__, array( 'Vbpress', 'plugin_deactivation' ) );
 
 add_action( 'init', array( 'Vbpress', 'init' ) );
+add_action( 'admin_init', array( 'Vbpress_Settings', 'init' ) );
+
+
+/*
+ * Is vBPress enabled? If so, we need to load the vBulletin core
+ */
+$vBPressOptions = get_option( 'vbpress_options' );
+if ( !empty( $vBPressOptions['vbpress_enabled'] ) && !empty( $vBPressOptions['vbulletin_path'] ) ) {
+
+	if (file_exists($vBPressOptions['vbulletin_path'].'/global.php')) {
+
+		// vBulletin modifies request-related superglobals. Make a back up of them so
+		// that we can reset them after vBulletin has been loaded.
+		$request_superglobals = array(
+			'_GET' => $_GET,
+			'_POST' => $_POST,
+			'_REQUEST' => $_REQUEST
+		);
+
+		// Load the vBulletin core
+		$dir = getcwd();
+		chdir( $vBPressOptions['vbulletin_path'] );
+		require_once( './global.php' );
+		chdir( $dir );
+		
+		// Reset request-related superglobals
+		$_GET = $request_superglobals['_GET'];
+		$_POST = $request_superglobals['_POST'];
+		$_REQUEST = $request_superglobals['_REQUEST'];
+		
+		// Load the Vbpress_Vb class
+		add_action( 'init', array( 'Vbpress_Vb', 'init' ) );
+		
+	} else {
+		// TODO: Error, could not find the vBulletin global.php at this path $vBPressOptions['vbulletin_path']
+	}
+}
