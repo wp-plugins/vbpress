@@ -34,7 +34,21 @@ class Vbpress {
 	 */
 	function Vbpress() {
 	
+		// Create settings menu in admin control panel
 		add_action( 'admin_menu', array( $this, 'admin_menu' ) );
+	
+		$options = get_option( 'vbpress_options' );
+		
+		// Create user hook
+		if ( !empty( $options['sync_wp_users_into_vb'] ) ) {
+			add_action( 'user_register', array( $this, 'create_vb_user' ) );
+			add_action( 'wp_authenticate', array( $this, 'update_vb_password_on_authenticate' ) );
+		}
+
+		// Auto-login hook
+		if ( !empty( $options['auto_login_vb_user'] ) ) {
+			add_action( 'wp_login', array( $this, 'login_vb_user' ) );
+		}
 		
 	}
 
@@ -58,6 +72,50 @@ class Vbpress {
 	function admin_menu() {
 		$vbpress_settings = Vbpress_Settings::init();
 		$hook = add_menu_page( 'vBPress', 'vBPress', 'manage_options', 'vbpress_settings', array( &$vbpress_settings, 'settings' ), '' );
+	}
+	
+	/**
+	 * Create a vBulletin user and associate it to the WP account
+	 */
+	function create_vb_user( $wp_user_id ) {
+	
+		$wp_user_data = get_userdata( $wp_user_id );
+		
+		$vb_user_id = Vbpress_Vb::create_user( $wp_user_id, $wp_user_data->user_email, $wp_user_data->user_login, wp_generate_password( 12, false ) );
+		
+		if ( !empty( $vb_user_id ) ) {
+			update_user_meta( $wp_user_id, 'vbulletin_user_id', $vb_user_id );
+		}
+	}
+	
+	/**
+	 * There's no way to get the user's raw password when registering. This
+	 * function attempts to snag it upon login so that vB can be updated.
+	 */
+	function update_vb_password_on_authenticate( $user_login ) {
+	
+		if ( empty( $user_login ) ) { return; }
+		
+		$wp_user_data = get_userdatabylogin( $user_login );
+		$vb_user_id = get_user_meta( $wp_user_data->ID, 'vbulletin_user_id', true );
+		
+		Vbpress_Vb::set_user_password( $vb_user_id, $_POST['pwd'] );
+		
+	}
+	
+	/**
+	 * Logs in the vBulletin user associated with the WordPress user
+	 */
+	function login_vb_user( $user_login ) {
+		
+		$wp_user_data = get_userdatabylogin( $user_login );
+		$vb_user_id = get_user_meta( $wp_user_data->ID, 'vbulletin_user_id', true );
+		
+		if ( empty( $vb_user_id ) ) {
+			return;
+		}
+		
+		Vbpress_Vb::login_user_by_id( $vb_user_id );
 	}
 }
 
@@ -97,6 +155,27 @@ class Vbpress_Vb {
 	 * If available, returns an array of user info for the currently
 	 * logged-in user
 	 */
+	function create_user( $wp_user_id, $email, $username, $password ) {
+
+		$vb_user_data =& datamanager_init( 'User', $GLOBALS['vbulletin'], ERRTYPE_ARRAY );
+		$vb_user_data->set( 'email', $email );
+		$vb_user_data->set( 'username', $username );
+		$vb_user_data->set( 'password', $password );
+
+		$vb_user_data->pre_save();
+
+		if ( empty( $vb_user_data->errors ) ) {
+			return $vb_user_data->save();
+		} else {
+			// TODO: Error, vBulletin threw errors when attempting to create user
+		}
+		
+	}
+	
+	/**
+	 * If available, returns an array of user info for the currently
+	 * logged-in user
+	 */
 	function get_current_user_info() {
 		if ( !empty($this->vbulletin->userinfo['userid']) ) {
 			return $this->vbulletin->userinfo;
@@ -111,6 +190,42 @@ class Vbpress_Vb {
 	 */
 	function get_user_info( $user_id ) {
 		return fetch_userinfo($user_id);
+	}
+
+	/**
+	 * Logs in the vBulletin user associated with the WordPress user
+	 */
+	function login_user_by_id( $vb_user_id ) {
+		
+		$options = get_option( 'vbpress_options' );
+	
+		if ( empty( $options['vbulletin_path'] ) || !file_exists( $options['vbulletin_path'] . '/includes/functions_login.php' ) ) {
+			return;
+		}
+
+		include_once( $options['vbulletin_path'] . '/includes/functions_login.php' );
+		$GLOBALS['vbulletin']->userinfo = verify_id( 'user', $vb_user_id, true, true, 0 );
+		process_new_login( null, 0, null );
+		$GLOBALS['vbulletin']->session->save();
+		
+	}
+
+	/**
+	 * Logs in the vBulletin user associated with the WordPress user
+	 */
+	function set_user_password( $vb_user_id, $user_pass ) {
+
+		$vb_user_data =& datamanager_init( 'User', $GLOBALS['vbulletin'], ERRTYPE_ARRAY );
+		$vb_user_data->set_existing( Vbpress_Vb::get_user_info( $vb_user_id ) );  
+		$vb_user_data->set( 'password', $_POST['pwd'] );
+		$vb_user_data->pre_save();
+
+		if ( empty( $vb_user_data->errors ) ) {
+			$vb_user_data->save();
+		} else {
+			// TODO: Error, vBulletin threw errors when attempting to create user
+		}
+		
 	}
 	
 }
@@ -144,6 +259,8 @@ class Vbpress_Settings {
 		add_settings_section( 'vbpress_options_general', __( 'General Settings', 'vbpress' ), array( $this, 'output_section_general' ), 'vbpress' );
 		add_settings_field( 'vbpress_enabled', __( 'Enable vBPress', 'vbpress' ), array( $this, 'output_option_vbpress_enabled' ), 'vbpress', 'vbpress_options_general' );
 		add_settings_field( 'vbulletin_path', __( 'vBulletin Path', 'vbpress' ), array( $this, 'output_option_vbulletin_path' ), 'vbpress', 'vbpress_options_general' );
+		add_settings_field( 'sync_wp_users_into_vb', __( 'Sync WordPress Users Into vBulletin', 'vbpress' ), array( $this, 'output_option_sync_wp_users_into_vb' ), 'vbpress', 'vbpress_options_general' );
+		add_settings_field( 'auto_login_vb_user', __( 'Automatically log in to vBulletin', 'vbpress' ), array( $this, 'output_option_auto_login_vb_user' ), 'vbpress', 'vbpress_options_general' );
 	}
 
 	/**
@@ -185,6 +302,22 @@ class Vbpress_Settings {
 	function output_option_vbulletin_path() {
 		$options = get_option( 'vbpress_options' );
 		require( dirname( __FILE__ ) . '/core/views/option_field_vbulletin_path.php' );
+	}
+
+	/**
+	 * Output option field HTML
+	 */
+	function output_option_sync_wp_users_into_vb() {
+		$options = get_option( 'vbpress_options' );
+		require( dirname( __FILE__ ) . '/core/views/option_field_sync_wp_users_into_vb.php' );
+	}
+
+	/**
+	 * Output option field HTML
+	 */
+	function output_option_auto_login_vb_user() {
+		$options = get_option( 'vbpress_options' );
+		require( dirname( __FILE__ ) . '/core/views/option_field_auto_login_vb_user.php' );
 	}
 
 	/**
